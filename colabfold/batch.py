@@ -18,6 +18,11 @@ import time
 import zipfile
 import shutil
 import pickle
+import gzip
+import lzma
+from PIL import Image
+import matplotlib.pyplot as plt
+import matplotlib.colors
 
 from argparse import ArgumentParser
 from pathlib import Path
@@ -73,6 +78,49 @@ logger = logging.getLogger(__name__)
 import jax
 import jax.numpy as jnp
 logging.getLogger('jax._src.lib.xla_bridge').addFilter(lambda _: False)
+
+
+
+c1 = (47, 117, 214, 255)
+c1 = tuple(ti/255 for ti in c1)
+
+c2 = (255, 255, 255, 255)
+c2 = tuple(ti/255 for ti in c2)
+
+c3 = (237, 64, 64,255)
+c3 = tuple(ti/255 for ti in c3)
+
+norm = plt.Normalize(-2,2)
+cmap = matplotlib.colors.LinearSegmentedColormap.from_list("", [c1, c2, c3])
+
+def plot_ticks(Ls):
+  Ln = sum(Ls)
+  L_prev = 0
+  for L_i in Ls[:-1]:
+    L = L_prev + L_i
+    L_prev += L_i
+    plt.plot([0,Ln],[L,L],color="black")
+    plt.plot([L,L],[0,Ln],color="black")
+  ticks = np.cumsum([0]+Ls)
+  ticks = (ticks[1:] + ticks[:-1])/2
+  plt.yticks(ticks,)
+
+def plot_pae(pae, pae_filename, Ls=None,img_size = 600):
+
+    fig = plt.figure(num=1, clear=True, facecolor='w')
+    width = img_size/300
+    fig.set_size_inches(width, width)
+    ax = fig.add_subplot()
+    Ln = pae.shape[0]
+    ax.imshow(pae,cmap=cmap,vmin=0,vmax=30,extent=(0, Ln, Ln, 0))
+    ax.axis('off')
+    if Ls is not None and len(Ls) > 1: plot_ticks(Ls)
+    plt.savefig(pae_filename, bbox_inches='tight', pad_inches = 0, dpi =300)
+    fig.clear()
+    plt.close(fig)
+    img = Image.open(pae_filename).convert("RGB");
+    img.save(pae_filename.replace("png", "webp"), "webp", lossless=True)
+    os.remove(pae_filename)
 
 def patch_openmm():
     from simtk.openmm import app
@@ -483,6 +531,9 @@ def predict_structure(
 
             # save pdb
             protein_lines = protein.to_pdb(unrelaxed_protein)
+            pdb_filename = str(files.get("unrelaxed","pdb.xz"))
+            with lzma.open(pdb_filename, 'wb') as handle:
+                handle.write(protein_lines.encode("utf-8"))
             files.get("unrelaxed","pdb").write_text(protein_lines)
             unrelaxed_pdb_lines.append(protein_lines)
 
@@ -496,19 +547,20 @@ def predict_structure(
                 np.save(files.get("pair_repr","npy"),result["representations"]["pair"])
 
             # write an easy-to-use format (pAE and pLDDT)
-            with files.get("scores","json").open("w") as handle:
-                plddt = result["plddt"][:seq_len]
-                scores = {"plddt": np.around(plddt.astype(float), 2).tolist()}
+            score_filename = str(files.get("scores","json.xz"))
+            with lzma.open(score_filename, 'wb') as handle:
                 if "predicted_aligned_error" in result:
                   pae   = result["predicted_aligned_error"][:seq_len,:seq_len]
+                  plot_pae(pae, score_filename + "_pae.png", sequences_lengths)
                   scores.update({"max_pae": pae.max().astype(float).item(),
-                                 "pae": np.around(pae.astype(float), 2).tolist()})
+                                 "pae": pae.astype(int).tolist()})
                   for k in ["ptm","iptm"]:
                     if k in conf[-1]: scores[k] = np.around(conf[-1][k], 2).item()
+                  pae_txt = json.dumps(scores, separators=(',', ':'))
+                  handle.write(pae_txt.encode("utf-8"))
                   del pae
                 del plddt
-                json.dump(scores, handle)
-            
+                
             del result, unrelaxed_protein
 
             # early stop criteria fulfilled
@@ -1376,7 +1428,9 @@ def run(
 
             # save a3m
             msa = msa_to_str(unpaired_msa, paired_msa, query_seqs_unique, query_seqs_cardinality)
-            result_dir.joinpath(f"{jobname}.a3m").write_text(msa)
+            msa_filename = str(result_dir.joinpath(f"{jobname}.a3m.xz"))
+            with lzma.open(msa_filename, 'wb') as handle:
+                handle.write(msa.encode("utf-8"))
                 
         except Exception as e:
             logger.exception(f"Could not get MSA/templates for {jobname}: {e}")
@@ -1495,35 +1549,35 @@ def run(
         result_files.append(coverage_png)
 
         # load the scores
-        scores = []
-        for r in results["rank"][:5]:
-            scores_file = result_dir.joinpath(f"{jobname}_scores_{r}.json")
-            with scores_file.open("r") as handle:
-                scores.append(json.load(handle))
+#         scores = []
+#         for r in results["rank"][:5]:
+#             scores_file = result_dir.joinpath(f"{jobname}_scores_{r}.json")
+#             with scores_file.open("r") as handle:
+#                 scores.append(json.load(handle))
         
-        # write alphafold-db format (pAE)
-        if "pae" in scores[0]:
-          af_pae_file = result_dir.joinpath(f"{jobname}_predicted_aligned_error_v1.json")
-          af_pae_file.write_text(json.dumps({
-              "predicted_aligned_error":scores[0]["pae"],
-              "max_predicted_aligned_error":scores[0]["max_pae"]}))
-          result_files.append(af_pae_file)
+#         # write alphafold-db format (pAE)
+#         if "pae" in scores[0]:
+#           af_pae_file = result_dir.joinpath(f"{jobname}_predicted_aligned_error_v1.json")
+#           af_pae_file.write_text(json.dumps({
+#               "predicted_aligned_error":scores[0]["pae"],
+#               "max_predicted_aligned_error":scores[0]["max_pae"]}))
+#           result_files.append(af_pae_file)
 
-          # make pAE plots
-          paes_plot = plot_paes([np.asarray(x["pae"]) for x in scores],
-              Ls=query_sequence_len_array, dpi=dpi)
-          pae_png = result_dir.joinpath(f"{jobname}_pae.png")
-          paes_plot.savefig(str(pae_png), bbox_inches='tight')
-          paes_plot.close()
-          result_files.append(pae_png)
+#           # make pAE plots
+#           paes_plot = plot_paes([np.asarray(x["pae"]) for x in scores],
+#               Ls=query_sequence_len_array, dpi=dpi)
+#           pae_png = result_dir.joinpath(f"{jobname}_pae.png")
+#           paes_plot.savefig(str(pae_png), bbox_inches='tight')
+#           paes_plot.close()
+#           result_files.append(pae_png)
 
-        # make pLDDT plot
-        plddt_plot = plot_plddts([np.asarray(x["plddt"]) for x in scores],
-            Ls=query_sequence_len_array, dpi=dpi)
-        plddt_png = result_dir.joinpath(f"{jobname}_plddt.png")
-        plddt_plot.savefig(str(plddt_png), bbox_inches='tight')
-        plddt_plot.close()
-        result_files.append(plddt_png)
+#         # make pLDDT plot
+#         plddt_plot = plot_plddts([np.asarray(x["plddt"]) for x in scores],
+#             Ls=query_sequence_len_array, dpi=dpi)
+#         plddt_png = result_dir.joinpath(f"{jobname}_plddt.png")
+#         plddt_plot.savefig(str(plddt_png), bbox_inches='tight')
+#         plddt_plot.close()
+#         result_files.append(plddt_png)
 
         if use_templates:
             templates_file = result_dir.joinpath(f"{jobname}_template_domain_names.json")
