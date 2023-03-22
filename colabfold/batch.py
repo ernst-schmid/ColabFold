@@ -24,6 +24,8 @@ from PIL import Image
 import matplotlib.pyplot as plt
 import matplotlib.colors
 
+
+from threading import Thread, Event
 from argparse import ArgumentParser
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union, TYPE_CHECKING
@@ -1391,6 +1393,37 @@ def run(
 
     pad_len = 0
     ranks, metrics = [],[]
+    
+    msa_data_store = {}
+    def fetch_msas_in_background(queries,result_dir,keep_existing_results,use_templates,get_msa_and_templates,msa_to_str, unserialize_msa,logger,data_store):
+        
+        for job_number, (raw_jobname, query_sequence, a3m_lines) in enumerate(queries):
+            jobname = safe_filename(raw_jobname)
+            is_done_marker = result_dir.joinpath(jobname + ".done.txt")
+            if keep_existing_results and is_done_marker.is_file():
+                logger.info(f"Skipping {jobname} (already done)")
+                continue
+            try:
+                if use_templates or a3m_lines is None:
+                    data_store[jobname] = get_msa_and_templates(jobname, query_sequence, result_dir, msa_mode, use_templates, custom_template_path, pair_mode, host_url)
+                if a3m_lines is not None:
+                    (unpaired_msa, paired_msa, query_seqs_unique, query_seqs_cardinality, template_features_) \
+                    = unserialize_msa(a3m_lines, query_sequence)
+                    if not use_templates: template_features = template_features_
+                # save a3m
+                (unpaired_msa, paired_msa, query_seqs_unique, query_seqs_cardinality, template_features) = data_store[jobname]
+                msa = msa_to_str(unpaired_msa, paired_msa, query_seqs_unique, query_seqs_cardinality)
+                msa_filename = str(result_dir.joinpath(f"{jobname}.a3m.xz"))
+                with lzma.open(msa_filename, 'wb') as handle:
+                    handle.write(msa.encode("utf-8"))
+            except Exception as e:
+                logger.exception(f"Could not generate MSA for {jobname}: {e}")
+                data_store[jobname] = 'error'
+                continue
+    
+    msa_bg_thread = Thread(target=fetch_msas_in_background, args=(queries,result_dir,keep_existing_results,use_templates,get_msa_and_templates,msa_to_str, unserialize_msa,logger, msa_data_store,))
+    msa_bg_thread.start()
+    
     first_job = True
     for job_number, (raw_jobname, query_sequence, a3m_lines) in enumerate(queries):
         jobname = safe_filename(raw_jobname)
@@ -1415,26 +1448,14 @@ def run(
         ###########################################
         # generate MSA (a3m_lines) and templates
         ###########################################
-        try:
-            if use_templates or a3m_lines is None:
-                (unpaired_msa, paired_msa, query_seqs_unique, query_seqs_cardinality, template_features) \
-                = get_msa_and_templates(jobname, query_sequence, result_dir, msa_mode, use_templates, 
-                    custom_template_path, pair_mode, host_url)
-            if a3m_lines is not None:
-                (unpaired_msa, paired_msa, query_seqs_unique, query_seqs_cardinality, template_features_) \
-                = unserialize_msa(a3m_lines, query_sequence)
-                if not use_templates: template_features = template_features_
 
-            # save a3m
-            msa = msa_to_str(unpaired_msa, paired_msa, query_seqs_unique, query_seqs_cardinality)
-            msa_filename = str(result_dir.joinpath(f"{jobname}.a3m.xz"))
-            with lzma.open(msa_filename, 'wb') as handle:
-                handle.write(msa.encode("utf-8"))
-                
-        except Exception as e:
-            logger.exception(f"Could not get MSA/templates for {jobname}: {e}")
-            continue
-        
+        while jobname not in msa_data_store:
+            time.sleep(10)
+
+        if msa_data_store[jobname] == 'error':
+             logger.info(f"ERROR: Could not get MSA for {jobname} have to skip")
+         
+        (unpaired_msa, paired_msa, query_seqs_unique, query_seqs_cardinality, template_features) = msa_data_store.pop(jobname, None)
         #######################
         # generate features
         #######################
@@ -1596,7 +1617,8 @@ def run(
                 file.unlink()
         else:
             is_done_marker.touch()
-
+            
+    msa_bg_thread.join()
     logger.info("Done")
     return {"rank":ranks,"metric":metrics}
 
