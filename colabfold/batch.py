@@ -552,8 +552,10 @@ def predict_structure(
                 if "predicted_aligned_error" in result:
                   pae   = result["predicted_aligned_error"][:seq_len,:seq_len]
                   plot_pae(pae, score_filename + "_pae.png", sequences_lengths)
-                  scores.update({"max_pae": pae.max().astype(float).item(),
-                                 "pae": pae.astype(int).tolist()})
+                  scores = {
+                    "max_pae": pae.max().astype(float).item(),
+                    "pae": pae.astype(int).tolist(),
+                  }
                   for k in ["ptm","iptm"]:
                     if k in conf[-1]: scores[k] = np.around(conf[-1][k], 2).item()
                   pae_txt = json.dumps(scores, separators=(',', ':'))
