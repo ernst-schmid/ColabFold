@@ -534,8 +534,6 @@ def predict_structure(
             pdb_filename = str(files.get("unrelaxed","pdb.xz"))
             with lzma.open(pdb_filename, 'wb') as handle:
                 handle.write(protein_lines.encode("utf-8"))
-            files.get("unrelaxed","pdb").write_text(protein_lines)
-            unrelaxed_pdb_lines.append(protein_lines)
 
             # save raw outputs
             if save_all:
@@ -561,8 +559,7 @@ def predict_structure(
                   pae_txt = json.dumps(scores, separators=(',', ':'))
                   handle.write(pae_txt.encode("utf-8"))
                   del pae
-                del plddt
-                
+                  del scores
             del result, unrelaxed_protein
 
             # early stop criteria fulfilled
