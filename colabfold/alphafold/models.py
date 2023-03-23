@@ -86,7 +86,8 @@ def load_models_and_params(
 
             # disable some outputs if not being saved
             if not save_all:
-                model_config.model.heads.distogram.weight = 0.0
+                #re-enable the distogram as a default output
+                #model_config.model.heads.distogram.weight = 0.0
                 model_config.model.heads.masked_msa.weight = 0.0
                 model_config.model.heads.experimentally_resolved.weight = 0.0
 
