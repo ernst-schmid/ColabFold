@@ -21,6 +21,8 @@ import matplotlib
 import matplotlib.patheffects
 from matplotlib import collections as mcoll
 
+import tensorflow as tf
+
 import logging
 logger = logging.getLogger(__name__)
 
