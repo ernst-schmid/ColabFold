@@ -536,6 +536,21 @@ def predict_structure(
             pdb_filename = str(files.get("unrelaxed","pdb.xz"))
             with lzma.open(pdb_filename, 'wb') as handle:
                 handle.write(protein_lines.encode("utf-8"))
+                
+            #write out distogram probability distribution for every residue pair ij               
+            dist_probabilities = np.rint(100*np.apply_along_axis(tf.nn.softmax, 2, result['distogram']['logits']))
+            dist_probabilities_list = dist_probabilities.astype(int).tolist()
+
+            dist_maxes = np.apply_along_axis(np.amax, 2, dist_probabilities)
+            dist_max_list = dist_maxes.astype(int).tolist()
+
+            with lzma.open(str(files.get("dgram","json.xz")), "wb") as write_file:
+                dist_txt = json.dumps(dist_probabilities_list, separators=(',', ':'))
+                write_file.write(dist_txt.encode("utf-8"))
+
+            with lzma.open(str(files.get("dgram_max","json.xz")), "wb") as write_file:
+                dist_txt = json.dumps(dist_max_list, separators=(',', ':'))
+                write_file.write(dist_txt.encode("utf-8"))
 
             # save raw outputs
             if save_all:
