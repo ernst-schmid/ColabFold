@@ -42,7 +42,8 @@ pymol_color_list = ["#33ff33","#00ffff","#ff33cc","#ffff00","#ff9999","#e5e5e5",
 pymol_cmap = matplotlib.colors.ListedColormap(pymol_color_list)
 alphabet_list = list(ascii_uppercase+ascii_lowercase)
 
-aatypes = set('ACDEFGHIKLMNPQRSTVWY')
+#exclude pdb templates that have formatting issues that cause HHSearch to crash
+pdb_template_exclude_list = ['6WOV_C', '7RZ9_A']
 
 
 ###########################################
@@ -249,6 +250,9 @@ def run_mmseqs2(x, prefix, use_env=True, use_filter=True,
     for line in open(f"{path}/pdb70.m8","r"):
       p = line.rstrip().split()
       M,pdb,qid,e_value = p[0],p[1],p[2],p[10]
+      
+      if pdb in pdb_template_exclude_list:
+        continue
       M = int(M)
       if M not in templates: templates[M] = []
       templates[M].append(pdb)
