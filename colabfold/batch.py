@@ -35,6 +35,8 @@ import importlib_metadata
 import numpy as np
 import pandas
 
+import tensorflow as tf
+
 try:
     import alphafold
 except ModuleNotFoundError:
@@ -680,6 +682,16 @@ def get_queries(
             query_sequence = seqs[0]
             # Use a list so we can easily extend this to multiple msas later
             a3m_lines = [input_path.read_text()]
+            queries = [(input_path.stem, query_sequence, a3m_lines)]
+        elif input_path.suffix == ".a3m.xz":
+
+            msa_text = lzma.open(str(input_path),mode='rt', encoding='utf-8').read()
+            (seqs, header) = parse_fasta(msa_text)
+            if len(seqs) == 0:
+                raise ValueError(f"{input_path} is empty")
+            query_sequence = seqs[0]
+            # Use a list so we can easily extend this to multiple msas later
+            a3m_lines = [msa_text]
             queries = [(input_path.stem, query_sequence, a3m_lines)]
         elif input_path.suffix in [".fasta", ".faa", ".fa"]:
             (sequences, headers) = parse_fasta(input_path.read_text())
@@ -1424,6 +1436,7 @@ def run(
                 if a3m_lines is not None:
                     (unpaired_msa, paired_msa, query_seqs_unique, query_seqs_cardinality, template_features_) \
                     = unserialize_msa(a3m_lines, query_sequence)
+                    data_store[jobname] = (unpaired_msa, paired_msa, query_seqs_unique, query_seqs_cardinality, template_features_)
                     if not use_templates: template_features = template_features_
                 # save a3m
                 (unpaired_msa, paired_msa, query_seqs_unique, query_seqs_cardinality, template_features) = data_store[jobname]
@@ -1463,14 +1476,27 @@ def run(
         ###########################################
         # generate MSA (a3m_lines) and templates
         ###########################################
+        try:
+            if use_templates or a3m_lines is None:
 
-        while jobname not in msa_data_store:
-            time.sleep(10)
+                while jobname not in msa_data_store:
+                    logger.info(f"WAITING ON MSA for {jobname}, sleeping for 10s")
+                    time.sleep(10)
 
-        if msa_data_store[jobname] == 'error':
-             logger.info(f"ERROR: Could not get MSA for {jobname} have to skip")
-         
-        (unpaired_msa, paired_msa, query_seqs_unique, query_seqs_cardinality, template_features) = msa_data_store.pop(jobname, None)
+                if msa_data_store[jobname] == 'error':
+                    logger.info(f"ERROR: Could not get MSA for {jobname} have to skip")
+
+                else:
+                    (unpaired_msa, paired_msa, query_seqs_unique, query_seqs_cardinality, template_features) = msa_data_store.pop(jobname, None)
+
+            if a3m_lines is not None:
+                (unpaired_msa, paired_msa, query_seqs_unique, query_seqs_cardinality, template_features_) \
+                = unserialize_msa(a3m_lines, query_sequence)
+                if not use_templates: template_features = template_features_
+        except Exception as e:
+            logger.exception(f"Could not get MSA/templates for {jobname}: {e}")
+            continue
+
         #######################
         # generate features
         #######################
