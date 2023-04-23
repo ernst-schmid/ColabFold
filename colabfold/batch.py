@@ -228,6 +228,248 @@ def mk_template(
     )
     return dict(templates_result.features)
 
+
+
+global_template_feature_storage = {}
+global_template_a3m_lines_mmseqs2_storage = {}
+global_unpaired_a3m_lines_storage = {}
+
+def get_msa_and_templates_v2(
+    jobname: str,
+    query_sequences: Union[str, List[str]],
+    result_dir: Path,
+    msa_mode: str,
+    use_templates: bool,
+    custom_template_path: str,
+    pair_mode: str,
+    host_url: str = DEFAULT_API_SERVER,
+) -> Tuple[
+    Optional[List[str]], Optional[List[str]], List[str], List[int], List[Dict[str, Any]]
+]:
+    from colabfold.colabfold import run_mmseqs2
+
+    use_env = msa_mode == "mmseqs2_uniref_env"
+    if isinstance(query_sequences, str): query_sequences = [query_sequences]
+
+    #DPOLQ_HUMAN.1-500.__MSH3_HUMAN__1637aa
+    comps = jobname.split('__')
+    chain_regions = []
+    valid_name = len(comps) - 1 == len(query_sequences)
+    if valid_name:
+        for i in range(0, len(comps) - 1):
+            c = comps[i]
+            if '-' and '.' in c:
+                r = c.split('.')[1]
+                if len(r.split('-')) != 2:
+                    valid_name = False
+                    break
+                start, end = r.split('-')
+                start = int(start)
+                end = int(end)
+                if (start < 1 or end < start or end > len(query_sequences[i])):
+                    valid_name = False
+                chain_regions.append([int(start),int(end)])
+            else:
+                chain_regions.append([1,-1])
+
+    # remove duplicates before searching
+    query_seqs_unique = []
+    for x in query_sequences:
+        query_seqs_unique.append(x)
+
+    # determine how many times is each sequence is used
+    query_seqs_cardinality = [0] * len(query_seqs_unique)
+    for seq in query_sequences:
+        seq_idx = query_seqs_unique.index(seq)
+        query_seqs_cardinality[seq_idx] += 1
+
+    # get template features
+    template_features = []
+    if use_templates:
+
+        seqs_to_fetch_start = 0
+        for index in range(0, len(query_seqs_unique)):
+            seq = query_seqs_unique[index]
+            if valid_name and chain_regions[index][1] != -1:
+                seq = query_seqs_unique[index][chain_regions[index][0] - 1:chain_regions[index][1]]
+            
+            if(seq in global_template_feature_storage):
+                template_features.append(global_template_feature_storage[seq])
+            else:
+                seqs_to_fetch_start = index
+                break
+
+        seqs_to_fetch  = []
+        for index in range(seqs_to_fetch_start, len(query_seqs_unique)):
+            seqs_to_fetch.append(query_seqs_unique[index])
+
+        if len(seqs_to_fetch) > 0:
+
+            a3m_lines_mmseqs2, template_paths = run_mmseqs2(
+                seqs_to_fetch,
+                str(result_dir.joinpath(jobname)),
+                use_env,
+                use_templates=True,
+                host_url=host_url,
+            )
+            if valid_name:
+                for index in range(seqs_to_fetch_start, len(query_seqs_unique)):
+                    region = chain_regions[index]
+                    if region[1] != -1:
+                        i = index - seqs_to_fetch_start
+                        a3m_lines_mmseqs2[i] = crop_msa(a3m_lines_mmseqs2[i], region[0], region[1])
+                    
+            if custom_template_path is not None:
+                template_paths = {}
+                for index in range(0, len(query_seqs_unique)):
+                    template_paths[index] = custom_template_path
+            if template_paths is None:
+                logger.info("No template detected")
+                for index in range(seqs_to_fetch_start, len(query_seqs_unique)):
+                    seq = query_seqs_unique[index]
+                    if valid_name and chain_regions[index][1] != -1:
+                        seq = query_seqs_unique[index][chain_regions[index][0] - 1:chain_regions[index][1]]
+                    template_feature = mk_mock_template(seq)
+                    template_features.append(template_feature)
+                    global_template_feature_storage[seq] = template_feature
+            else:
+                for index in range(seqs_to_fetch_start, len(query_seqs_unique)):
+                    
+                    seq = query_seqs_unique[index]
+                    if valid_name and chain_regions[index][1] != -1:
+                        seq = query_seqs_unique[index][chain_regions[index][0] - 1:chain_regions[index][1]]
+
+                    i = index - seqs_to_fetch_start
+                    if template_paths[i] is not None:
+                        template_feature = mk_template(a3m_lines_mmseqs2[i],template_paths[i],seq)
+                        if len(template_feature["template_domain_names"]) == 0:
+
+                            template_feature = mk_mock_template(seq)
+                            logger.info(f"Sequence {index} found no templates")
+                        else:
+                            logger.info(
+                                f"Sequence {index} found templates: {template_feature['template_domain_names'].astype(str).tolist()}"
+                            )
+                    else:
+                        template_feature = mk_mock_template(seq)
+                        logger.info(f"Sequence {index} found no templates")
+
+                    template_features.append(template_feature)
+                    global_template_feature_storage[seq] = template_feature
+        else:
+            logger.info(
+                "No need to fetch templates, already have finished features ready!"
+            )
+    else:
+
+        for index in range(0, len(query_seqs_unique)):
+            seq = query_seqs_unique[index]
+            if valid_name and chain_regions[index][1] != -1:
+                seq = query_seqs_unique[index][chain_regions[index][0] - 1:chain_regions[index][1]]
+            template_feature = mk_mock_template(seq)
+            template_features.append(template_feature)
+
+    if len(query_sequences) == 1:
+        pair_mode = "none"
+
+    if pair_mode == "none" or pair_mode == "unpaired" or pair_mode == "unpaired_paired":
+        if msa_mode == "single_sequence":
+            a3m_lines = []
+            num = 101
+            for i, seq in enumerate(query_seqs_unique):
+                if valid_name and chain_regions[index][1] != -1:
+                    seq = query_seqs_unique[index][chain_regions[index][0] - 1:chain_regions[index][1]]
+                a3m_lines.append(f">{num + i}\n{seq}")
+        else:
+            # find normal a3ms
+
+            unpaired_msa_lines = []
+            seqs_to_fetch_start = 0
+            for index in range(0, len(query_seqs_unique)):
+                seq = query_seqs_unique[index]
+                if valid_name and chain_regions[index][1] != -1:
+                    seq = query_seqs_unique[index][chain_regions[index][0] - 1:chain_regions[index][1]]
+                
+                if seq in global_unpaired_a3m_lines_storage:
+                    unpaired_msa_lines.append(global_unpaired_a3m_lines_storage[seq])
+                    seqs_to_fetch_start += 1
+                else:
+                    break
+
+            seqs_to_fetch  = []
+            for index in range(seqs_to_fetch_start, len(query_seqs_unique)):
+                seqs_to_fetch.append(query_seqs_unique[index])
+            
+            if len(seqs_to_fetch) > 0:
+                a3m_lines = run_mmseqs2(
+                    seqs_to_fetch,
+                    str(result_dir.joinpath(jobname)),
+                    use_env,
+                    use_pairing=False,
+                    host_url=host_url,
+                )
+                if valid_name:
+                    for index in range(seqs_to_fetch_start, len(query_seqs_unique)):
+                        region = chain_regions[index]
+                        i = index - seqs_to_fetch_start
+                        msa_str = a3m_lines[i]
+                        if region[1] != -1:
+                            msa_str = crop_msa(a3m_lines[i], region[0], region[1])
+
+                        seq = query_seqs_unique[index]
+                        if valid_name and chain_regions[index][1] != -1:
+                            seq = query_seqs_unique[index][chain_regions[index][0] - 1:chain_regions[index][1]]
+                        global_unpaired_a3m_lines_storage[seq] = msa_str
+                        unpaired_msa_lines.append(msa_str)
+
+                a3m_lines = unpaired_msa_lines
+            else:
+                a3m_lines = unpaired_msa_lines
+
+    else:
+        a3m_lines = None
+
+    if msa_mode != "single_sequence" and (
+        pair_mode == "paired" or pair_mode == "unpaired_paired"
+    ):
+        # find paired a3m if not a homooligomers
+        if len(query_seqs_unique) > 1:
+            paired_a3m_lines = run_mmseqs2(
+                query_seqs_unique,
+                str(result_dir.joinpath(jobname)),
+                use_env,
+                use_pairing=True,
+                host_url=host_url,
+            )
+            if valid_name:
+                for index in range(0, len(query_seqs_unique)):
+                    region = chain_regions[index]
+                    if region[1] != -1:
+                        paired_a3m_lines[index] = crop_msa(paired_a3m_lines[index], region[0], region[1], False)
+        else:
+            # homooligomers
+            num = 101
+            paired_a3m_lines = []
+            for i in range(0, query_seqs_cardinality[0]):
+                paired_a3m_lines.append(f">{num+i}\n{query_seqs_unique[0]}\n")
+    else:
+        paired_a3m_lines = None
+
+    if valid_name:
+        for index in range(0, len(query_seqs_unique)):
+            region = chain_regions[index]
+            print(region)
+            if region[1] != -1:
+                query_seqs_unique[index] = query_seqs_unique[index][region[0]-1:region[1]]
+
+    return (
+        a3m_lines,
+        paired_a3m_lines,
+        query_seqs_unique,
+        query_seqs_cardinality,
+        template_features,
+    )
+
 def validate_and_fix_mmcif(cif_file: Path):
     """validate presence of _entity_poly_seq in cif file and add revision_date if missing"""
     # check that required poly_seq and revision_date fields are present
