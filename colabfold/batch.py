@@ -229,10 +229,11 @@ def mk_template(
     return dict(templates_result.features)
 
 
-
-global_template_feature_storage = {}
-global_template_a3m_lines_mmseqs2_storage = {}
-global_unpaired_a3m_lines_storage = {}
+def aa_seq_to_id(sequence):
+    sequence_bytes = sequence.encode('utf-8')
+    md5_hash = hashlib.md5(sequence_bytes).hexdigest()
+    identifier = ''.join(c for c in md5_hash if c.isalnum())
+    return identifier
 
 def get_msa_and_templates_v2(
     jobname: str,
@@ -272,6 +273,11 @@ def get_msa_and_templates_v2(
             else:
                 chain_regions.append([1,-1])
 
+    if not os.path.exists('colabfold_template_store'):
+        os.makedirs('colabfold_template_store')
+    if not os.path.exists('colabfold_unpaired_msa_store'):
+        os.makedirs('colabfold_unpaired_msa_store')
+
     # remove duplicates before searching
     query_seqs_unique = []
     for x in query_sequences:
@@ -292,11 +298,18 @@ def get_msa_and_templates_v2(
             seq = query_seqs_unique[index]
             if valid_name and chain_regions[index][1] != -1:
                 seq = query_seqs_unique[index][chain_regions[index][0] - 1:chain_regions[index][1]]
+
+            stored_feature = None
+            id = aa_seq_to_id(seq)
+            stored_templates_filename = f'colabfold_template_store/{id}.pkl'
+            if os.path.isfile(stored_templates_filename):
+                with open(stored_templates_filename, 'rb') as f:
+                    stored_feature = pickle.load(f)
             
-            if(seq in global_template_feature_storage):
-                template_features.append(global_template_feature_storage[seq])
+            if(stored_feature is not None):
+                template_features.append(stored_feature)
+                seqs_to_fetch_start += 1
             else:
-                seqs_to_fetch_start = index
                 break
 
         seqs_to_fetch  = []
@@ -331,7 +344,10 @@ def get_msa_and_templates_v2(
                         seq = query_seqs_unique[index][chain_regions[index][0] - 1:chain_regions[index][1]]
                     template_feature = mk_mock_template(seq)
                     template_features.append(template_feature)
-                    global_template_feature_storage[seq] = template_feature
+                    id = aa_seq_to_id(seq)
+                    with open(f'colabfold_template_store/{id}.pkl', 'wb') as f:
+                        pickle.dump(template_feature, f)
+
             else:
                 for index in range(seqs_to_fetch_start, len(query_seqs_unique)):
                     
@@ -347,19 +363,18 @@ def get_msa_and_templates_v2(
                             template_feature = mk_mock_template(seq)
                             logger.info(f"Sequence {index} found no templates")
                         else:
-                            logger.info(
-                                f"Sequence {index} found templates: {template_feature['template_domain_names'].astype(str).tolist()}"
-                            )
+                            logger.info(f"Sequence {index} found templates: {template_feature['template_domain_names'].astype(str).tolist()}")
                     else:
                         template_feature = mk_mock_template(seq)
                         logger.info(f"Sequence {index} found no templates")
 
                     template_features.append(template_feature)
-                    global_template_feature_storage[seq] = template_feature
+                    id = aa_seq_to_id(seq)
+                    with open(f'colabfold_template_store/{id}.pkl', 'wb') as f:
+                        pickle.dump(template_feature, f)
+
         else:
-            logger.info(
-                "No need to fetch templates, already have finished features ready!"
-            )
+            logger.info("No need to fetch templates, already have finished features ready!")
     else:
 
         for index in range(0, len(query_seqs_unique)):
@@ -382,16 +397,22 @@ def get_msa_and_templates_v2(
                 a3m_lines.append(f">{num + i}\n{seq}")
         else:
             # find normal a3ms
-
             unpaired_msa_lines = []
             seqs_to_fetch_start = 0
             for index in range(0, len(query_seqs_unique)):
                 seq = query_seqs_unique[index]
                 if valid_name and chain_regions[index][1] != -1:
                     seq = query_seqs_unique[index][chain_regions[index][0] - 1:chain_regions[index][1]]
+
+                stored_msa = None
+                id = aa_seq_to_id(seq)
+                stored_msa_filename = f'colabfold_unpaired_msa_store/{id}.pkl'
+                if os.path.isfile(stored_msa_filename):
+                    with open(stored_msa_filename, 'rb') as f:
+                        stored_msa = pickle.load(f)
                 
-                if seq in global_unpaired_a3m_lines_storage:
-                    unpaired_msa_lines.append(global_unpaired_a3m_lines_storage[seq])
+                if stored_msa is not None:
+                    unpaired_msa_lines.append(stored_msa)
                     seqs_to_fetch_start += 1
                 else:
                     break
@@ -401,6 +422,7 @@ def get_msa_and_templates_v2(
                 seqs_to_fetch.append(query_seqs_unique[index])
             
             if len(seqs_to_fetch) > 0:
+ 
                 a3m_lines = run_mmseqs2(
                     seqs_to_fetch,
                     str(result_dir.joinpath(jobname)),
@@ -408,22 +430,26 @@ def get_msa_and_templates_v2(
                     use_pairing=False,
                     host_url=host_url,
                 )
-                if valid_name:
-                    for index in range(seqs_to_fetch_start, len(query_seqs_unique)):
+
+                for index in range(seqs_to_fetch_start, len(query_seqs_unique)):
+                    seq = query_seqs_unique[index]
+                    i = index - seqs_to_fetch_start
+                    msa_str = a3m_lines[i]
+                    if valid_name and chain_regions[index][1] != -1:
                         region = chain_regions[index]
-                        i = index - seqs_to_fetch_start
-                        msa_str = a3m_lines[i]
-                        if region[1] != -1:
-                            msa_str = crop_msa(a3m_lines[i], region[0], region[1])
+                        seq = query_seqs_unique[index][region[0] - 1:region[1]]
+                        msa_str = crop_msa(a3m_lines[i], region[0], region[1])
 
-                        seq = query_seqs_unique[index]
-                        if valid_name and chain_regions[index][1] != -1:
-                            seq = query_seqs_unique[index][chain_regions[index][0] - 1:chain_regions[index][1]]
-                        global_unpaired_a3m_lines_storage[seq] = msa_str
-                        unpaired_msa_lines.append(msa_str)
-
+                    id = aa_seq_to_id(seq)
+                    stored_msa_filename = f'colabfold_unpaired_msa_store/{id}.pkl'
+                    with open(stored_msa_filename, 'wb') as f:
+                        pickle.dump(msa_str, f)
+                    
+                    unpaired_msa_lines.append(msa_str)
+                
                 a3m_lines = unpaired_msa_lines
             else:
+                logger.info("No need to fetch unpaired MSAs, already have finished MSAs ready!")
                 a3m_lines = unpaired_msa_lines
 
     else:
@@ -467,8 +493,7 @@ def get_msa_and_templates_v2(
         paired_a3m_lines,
         query_seqs_unique,
         query_seqs_cardinality,
-        template_features,
-    )
+        template_features,)
 
 def validate_and_fix_mmcif(cif_file: Path):
     """validate presence of _entity_poly_seq in cif file and add revision_date if missing"""
