@@ -24,7 +24,7 @@ from PIL import Image
 import matplotlib.pyplot as plt
 import matplotlib.colors
 import hashlib
-
+import re
 
 from threading import Thread, Event
 from argparse import ArgumentParser
