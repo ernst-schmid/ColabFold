@@ -253,7 +253,7 @@ def get_msa_and_templates_v2(
     if isinstance(query_sequences, str): query_sequences = [query_sequences]
 
     #DPOLQ_HUMAN.1-500.__MSH3_HUMAN__1637aa
-    comps = jobname.split('__')
+    comps = re.split('[^0-9]\-[^0-9]|__', jobname)
     chain_regions = []
     valid_name = len(comps) - 1 == len(query_sequences)
     if valid_name:
@@ -275,8 +275,10 @@ def get_msa_and_templates_v2(
 
     if not os.path.exists('colabfold_template_store'):
         os.makedirs('colabfold_template_store')
+
     if not os.path.exists('colabfold_unpaired_msa_store'):
         os.makedirs('colabfold_unpaired_msa_store')
+
 
     # remove duplicates before searching
     query_seqs_unique = []
@@ -290,10 +292,12 @@ def get_msa_and_templates_v2(
         query_seqs_cardinality[seq_idx] += 1
 
     # get template features
-    template_features = []
+    template_features = {}
     if use_templates:
 
-        seqs_to_fetch_start = 0
+        seqs_to_fetch = []
+        indices_fetched = []
+
         for index in range(0, len(query_seqs_unique)):
             seq = query_seqs_unique[index]
             if valid_name and chain_regions[index][1] != -1:
@@ -305,16 +309,11 @@ def get_msa_and_templates_v2(
             if os.path.isfile(stored_templates_filename):
                 with open(stored_templates_filename, 'rb') as f:
                     stored_feature = pickle.load(f)
-            
-            if(stored_feature is not None):
-                template_features.append(stored_feature)
-                seqs_to_fetch_start += 1
-            else:
-                break
 
-        seqs_to_fetch  = []
-        for index in range(seqs_to_fetch_start, len(query_seqs_unique)):
-            seqs_to_fetch.append(query_seqs_unique[index])
+            template_features[index] = stored_feature
+            if stored_feature is None:
+                seqs_to_fetch.append(seq)
+                indices_fetched.append(index)
 
         if len(seqs_to_fetch) > 0:
 
@@ -323,14 +322,14 @@ def get_msa_and_templates_v2(
                 str(result_dir.joinpath(jobname)),
                 use_env,
                 use_templates=True,
-                host_url=host_url,
-            )
+                host_url=host_url,)
             if valid_name:
-                for index in range(seqs_to_fetch_start, len(query_seqs_unique)):
+                i = 0
+                for index in indices_fetched:
                     region = chain_regions[index]
                     if region[1] != -1:
-                        i = index - seqs_to_fetch_start
                         a3m_lines_mmseqs2[i] = crop_msa(a3m_lines_mmseqs2[i], region[0], region[1])
+                        i += 1
                     
             if custom_template_path is not None:
                 template_paths = {}
@@ -338,7 +337,7 @@ def get_msa_and_templates_v2(
                     template_paths[index] = custom_template_path
             if template_paths is None:
                 logger.info("No template detected")
-                for index in range(seqs_to_fetch_start, len(query_seqs_unique)):
+                for index in indices_fetched:
                     seq = query_seqs_unique[index]
                     if valid_name and chain_regions[index][1] != -1:
                         seq = query_seqs_unique[index][chain_regions[index][0] - 1:chain_regions[index][1]]
@@ -349,17 +348,16 @@ def get_msa_and_templates_v2(
                         pickle.dump(template_feature, f)
 
             else:
-                for index in range(seqs_to_fetch_start, len(query_seqs_unique)):
+                i = 0
+                for index in indices_fetched:
                     
                     seq = query_seqs_unique[index]
                     if valid_name and chain_regions[index][1] != -1:
                         seq = query_seqs_unique[index][chain_regions[index][0] - 1:chain_regions[index][1]]
 
-                    i = index - seqs_to_fetch_start
                     if template_paths[i] is not None:
                         template_feature = mk_template(a3m_lines_mmseqs2[i],template_paths[i],seq)
                         if len(template_feature["template_domain_names"]) == 0:
-
                             template_feature = mk_mock_template(seq)
                             logger.info(f"Sequence {index} found no templates")
                         else:
@@ -368,10 +366,12 @@ def get_msa_and_templates_v2(
                         template_feature = mk_mock_template(seq)
                         logger.info(f"Sequence {index} found no templates")
 
-                    template_features.append(template_feature)
+                    template_features[index] = template_feature
                     id = aa_seq_to_id(seq)
                     with open(f'colabfold_template_store/{id}.pkl', 'wb') as f:
                         pickle.dump(template_feature, f)
+
+                    i += 1
 
         else:
             logger.info("No need to fetch templates, already have finished features ready!")
@@ -382,7 +382,9 @@ def get_msa_and_templates_v2(
             if valid_name and chain_regions[index][1] != -1:
                 seq = query_seqs_unique[index][chain_regions[index][0] - 1:chain_regions[index][1]]
             template_feature = mk_mock_template(seq)
-            template_features.append(template_feature)
+            template_features[index] = template_feature
+    
+    template_features = list(template_features.values())
 
     if len(query_sequences) == 1:
         pair_mode = "none"
@@ -397,12 +399,13 @@ def get_msa_and_templates_v2(
                 a3m_lines.append(f">{num + i}\n{seq}")
         else:
             # find normal a3ms
-            unpaired_msa_lines = []
-            seqs_to_fetch_start = 0
+            unpaired_msa_lines = {}
+
+            seqs_to_fetch = []
+            indices_fetched = []
+
             for index in range(0, len(query_seqs_unique)):
                 seq = query_seqs_unique[index]
-                if valid_name and chain_regions[index][1] != -1:
-                    seq = query_seqs_unique[index][chain_regions[index][0] - 1:chain_regions[index][1]]
 
                 stored_msa = None
                 id = aa_seq_to_id(seq)
@@ -412,14 +415,14 @@ def get_msa_and_templates_v2(
                         stored_msa = pickle.load(f)
                 
                 if stored_msa is not None:
-                    unpaired_msa_lines.append(stored_msa)
-                    seqs_to_fetch_start += 1
+                    msa_str = stored_msa
+                    if valid_name and chain_regions[index][1] != -1:
+                        msa_str = crop_msa(msa_str, chain_regions[index][0], chain_regions[index][1])
+                    unpaired_msa_lines[index] = msa_str
+                    
                 else:
-                    break
-
-            seqs_to_fetch  = []
-            for index in range(seqs_to_fetch_start, len(query_seqs_unique)):
-                seqs_to_fetch.append(query_seqs_unique[index])
+                    seqs_to_fetch.append(seq)
+                    indices_fetched.append(index)
             
             if len(seqs_to_fetch) > 0:
  
@@ -428,26 +431,25 @@ def get_msa_and_templates_v2(
                     str(result_dir.joinpath(jobname)),
                     use_env,
                     use_pairing=False,
-                    host_url=host_url,
-                )
+                    host_url=host_url)
 
-                for index in range(seqs_to_fetch_start, len(query_seqs_unique)):
+                i = 0
+                for index in indices_fetched:
                     seq = query_seqs_unique[index]
-                    i = index - seqs_to_fetch_start
                     msa_str = a3m_lines[i]
-                    if valid_name and chain_regions[index][1] != -1:
-                        region = chain_regions[index]
-                        seq = query_seqs_unique[index][region[0] - 1:region[1]]
-                        msa_str = crop_msa(a3m_lines[i], region[0], region[1])
-
                     id = aa_seq_to_id(seq)
                     stored_msa_filename = f'colabfold_unpaired_msa_store/{id}.pkl'
                     with open(stored_msa_filename, 'wb') as f:
                         pickle.dump(msa_str, f)
+
+                    if valid_name and chain_regions[index][1] != -1:
+                        region = chain_regions[index]
+                        msa_str = crop_msa(msa_str, region[0], region[1])
                     
-                    unpaired_msa_lines.append(msa_str)
+                    unpaired_msa_lines[index] = msa_str
+                    i += 1
                 
-                a3m_lines = unpaired_msa_lines
+                a3m_lines = list(unpaired_msa_lines.values())
             else:
                 logger.info("No need to fetch unpaired MSAs, already have finished MSAs ready!")
                 a3m_lines = unpaired_msa_lines
@@ -484,10 +486,8 @@ def get_msa_and_templates_v2(
     if valid_name:
         for index in range(0, len(query_seqs_unique)):
             region = chain_regions[index]
-            print(region)
             if region[1] != -1:
                 query_seqs_unique[index] = query_seqs_unique[index][region[0]-1:region[1]]
-
     return (
         a3m_lines,
         paired_a3m_lines,
