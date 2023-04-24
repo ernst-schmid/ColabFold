@@ -23,6 +23,7 @@ import lzma
 from PIL import Image
 import matplotlib.pyplot as plt
 import matplotlib.colors
+import hashlib
 
 
 from threading import Thread, Event
@@ -228,6 +229,27 @@ def mk_template(
     )
     return dict(templates_result.features)
 
+
+def crop_msa(msa_str, start, end, drop_empty = True):
+    
+    new_lines = []
+    active_id = None
+    lines = msa_str.splitlines()
+    for line in lines:
+        if line[0] != '>' and active_id is not None:
+            new_line = re.sub(r"[a-z\n]",'', line)[start - 1:end]
+
+            if drop_empty:
+                if len(new_line.replace('-', '')) > 0:
+                    new_lines.append(active_id)
+                    new_lines.append(new_line)
+            else:
+                new_lines.append(active_id)
+                new_lines.append(new_line)
+        else:
+            active_id = line
+
+    return "\n".join(new_lines)
 
 def aa_seq_to_id(sequence):
     sequence_bytes = sequence.encode('utf-8')
