@@ -177,8 +177,7 @@ def run_mmseqs2(x, prefix, use_env=True, use_filter=True,
 
   # deduplicate and keep track of order
   seqs_unique = []
-  #TODO this might be slow for large sets
-  [seqs_unique.append(x) for x in seqs if x not in seqs_unique]
+  [seqs_unique.append(x) for x in seqs]
   Ms = [N + seqs_unique.index(seq) for seq in seqs]
   # lets do it!
   if not os.path.isfile(tar_gz_file):
