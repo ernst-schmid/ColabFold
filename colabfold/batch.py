@@ -20,11 +20,14 @@ import shutil
 import pickle
 import gzip
 import lzma
+import uuid
+
 from PIL import Image
 import matplotlib.pyplot as plt
 import matplotlib.colors
 import re
 import hashlib
+from datetime import datetime, timezone
 
 from threading import Thread, Event
 from argparse import ArgumentParser
@@ -97,17 +100,18 @@ c3 = tuple(ti/255 for ti in c3)
 norm = plt.Normalize(-2,2)
 cmap = matplotlib.colors.LinearSegmentedColormap.from_list("", [c1, c2, c3])
 
-def plot_ticks(Ls):
-  Ln = sum(Ls)
-  L_prev = 0
-  for L_i in Ls[:-1]:
-    L = L_prev + L_i
-    L_prev += L_i
-    plt.plot([0,Ln],[L,L],color="black")
-    plt.plot([L,L],[0,Ln],color="black")
-  ticks = np.cumsum([0]+Ls)
-  ticks = (ticks[1:] + ticks[:-1])/2
-  plt.yticks(ticks,)
+def plot_ticks(Ls, line_thickness=0.5):
+    Ln = sum(Ls)
+    L_prev = 0
+    for L_i in Ls[:-1]:
+        L = L_prev + L_i
+        L_prev += L_i
+        plt.plot([0, Ln], [L, L], color="black", linewidth=line_thickness)
+        plt.plot([L, L], [0, Ln], color="black", linewidth=line_thickness)
+    ticks = np.cumsum([0] + Ls)
+    ticks = (ticks[1:] + ticks[:-1]) / 2
+    plt.yticks(ticks)
+
 
 def plot_pae(pae, pae_filename, Ls=None,img_size = 600):
 
@@ -212,6 +216,7 @@ def get_msa_and_templates_v2(
     custom_template_path: str,
     pair_mode: str,
     host_url: str = DEFAULT_API_SERVER,
+    use_proxy:bool=False
 ) -> Tuple[
     Optional[List[str]], Optional[List[str]], List[str], List[int], List[Dict[str, Any]]
 ]:
@@ -288,7 +293,8 @@ def get_msa_and_templates_v2(
                 str(result_dir.joinpath(jobname)),
                 use_env,
                 use_templates=True,
-                host_url=host_url,)
+                host_url=host_url,
+                use_proxy=False)
             if valid_name:
                 for i, index in enumerate(indices_fetched):
                     region = chain_regions[index]
@@ -411,7 +417,8 @@ def get_msa_and_templates_v2(
                     str(result_dir.joinpath(jobname)),
                     use_env,
                     use_pairing=False,
-                    host_url=host_url)
+                    host_url=host_url,
+                    use_proxy=False)
                 
                 for i, index in enumerate(indices_fetched):
                     seq = query_seqs_unique[index]
@@ -456,6 +463,7 @@ def get_msa_and_templates_v2(
                 use_env,
                 use_pairing=True,
                 host_url=host_url,
+               use_proxy=False
             )
 
             if valid_name:
@@ -698,6 +706,11 @@ def relax_me(pdb_filename=None, pdb_lines=None, pdb_obj=None, use_gpu=False):
     relaxed_pdb_lines, _, _ = amber_relaxer.process(prot=pdb_obj)
     return relaxed_pdb_lines
 
+
+
+
+
+
 class file_manager:
     def __init__(self, prefix: str, result_dir: Path):
         self.prefix = prefix
@@ -721,6 +734,7 @@ def predict_structure(
     feature_dict: Dict[str, Any],
     is_complex: bool,
     use_templates: bool,
+    template_domains:Dict,
     sequences_lengths: List[int],
     pad_len: int,
     model_type: str,
@@ -746,6 +760,7 @@ def predict_structure(
     model_names = []
     files = file_manager(prefix, result_dir)
     seq_len = sum(sequences_lengths)
+    fold_id = get_fold_id(prefix)
 
     # iterate through random seeds
     for seed_num, seed in enumerate(range(random_seed, random_seed+num_seeds)):
@@ -783,6 +798,8 @@ def predict_structure(
             # predict
             ########################
             start = time.time()
+
+            recycle_stats = []
             
             # monitor intermediate results
             def callback(result, recycles):
@@ -792,6 +809,13 @@ def predict_structure(
                 for x,y in [["mean_plddt","pLDDT"],["ptm","pTM"],["iptm","ipTM"],["tol","tol"]]:
                   if x in result:
                     print_line += f" {y}={result[x]:.3g}"
+
+                iptm = 0
+                if "iptm" in result: iptm = result['iptm']
+                tol = 0
+                if "tol" in result: tol = result['tol']
+
+                recycle_stats.append({'recycle_index':recycles, 'mean_plddt':result['mean_plddt'], 'ptm':result['ptm'], 'iptm':iptm, 'tol':tol})
                 logger.info(f"{tag} recycle={recycles}{print_line}")
 
                 if save_recycles:
@@ -854,12 +878,6 @@ def predict_structure(
             # save results
             #########################      
 
-            # save pdb
-            protein_lines = protein.to_pdb(unrelaxed_protein)
-            pdb_filename = str(files.get("unrelaxed","pdb.xz"))
-            with lzma.open(pdb_filename, 'wb') as handle:
-                handle.write(protein_lines.encode("utf-8"))
-                
             #write out distogram probability distribution for every residue pair ij               
             # dist_probabilities = np.rint(100*np.apply_along_axis(tf.nn.softmax, 2, result['distogram']['logits']))
             # dist_probabilities_list = dist_probabilities.astype(int).tolist()
@@ -884,6 +902,9 @@ def predict_structure(
             if save_pair_representations:
                 np.save(files.get("pair_repr","npy"),result["representations"]["pair"])
 
+
+            json_id = str(uuid.uuid4())
+
             # write an easy-to-use format (pAE and pLDDT)
             score_filename = str(files.get("scores","json.xz"))
             with lzma.open(score_filename, 'wb') as handle:
@@ -891,6 +912,8 @@ def predict_structure(
                   pae   = result["predicted_aligned_error"][:seq_len,:seq_len]
                   plot_pae(pae, score_filename + "_pae.png", sequences_lengths)
                   scores = {
+                    "id":json_id,
+                    "fold_id":fold_id,
                     "max_pae": pae.max().astype(float).item(),
                     "pae": pae.astype(int).tolist(),
                   }
@@ -900,6 +923,73 @@ def predict_structure(
                   handle.write(pae_txt.encode("utf-8"))
                   del pae
                   del scores
+            
+            pae_file_md5_hash = hashlib.md5(pae_txt.encode('utf-8')).hexdigest()
+            
+            # save pdb
+            protein_lines = protein.to_pdb(unrelaxed_protein)
+
+            config_out_file = result_dir.joinpath("config.json")
+            # Read configuration data from the JSON file
+            with open(config_out_file, 'r') as json_file:
+                config = json.load(json_file)
+
+
+            #ADD SETTINGS TO THE FINAL PDB FILE ES EDIT
+            new_settings_lines_str = ''
+            remark_index = 800
+            new_settings_lines_str += f"REMARK {remark_index + 1}  DATA generated_by=jwalterlab_fold_portal_HMS\n"
+            datetimestr = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S') + " UTC"
+            new_settings_lines_str += f"REMARK {remark_index + 2}  DATA fold_id={fold_id}\n"
+            new_settings_lines_str += f"REMARK {remark_index + 3}  DATA model_gen_time={datetimestr}\n"
+            new_settings_lines_str += f"REMARK {remark_index + 4}  DATA model_name={model_name}\n"
+            new_settings_lines_str += f"REMARK {remark_index + 5}  DATA PAE_json_file_md5={pae_file_md5_hash}\n"
+            new_settings_lines_str += f"REMARK {remark_index + 6}  DATA PAE_file_id={json_id}\n"
+            remark_index += 7
+
+            if(config.get('use_templates', False)):
+                for index, (chain, templates) in enumerate(template_domains.items()):
+
+                    templates = templates[0:feature_processing.MAX_TEMPLATES]
+                    new_settings_lines_str += f"REMARK {remark_index}  TEMPLATE CHAIN:{chain} " + " ".join(templates) + "\n"
+                    remark_index += 1
+
+                
+            
+            json_remarks = [
+                f"REMARK {remark_index}  SETTING use_templates={config.get('use_templates', False)}",
+                f"REMARK {remark_index + 1}  SETTING use_dropout={config.get('use_dropout', False)}",
+                f"REMARK {remark_index + 2}  SETTING msa_mode=\"{config.get('msa_mode', 'null')}\"",
+                f"REMARK {remark_index + 3}  SETTING model_type=\"{config.get('model_type', 'null')}\"",
+                f"REMARK {remark_index + 4}  SETTING num_recycles={config.get('num_recycles', 'null')}",
+                f"REMARK {remark_index + 5}  SETTING recycle_early_stop_tolerance={config.get('recycle_early_stop_tolerance', 'null')}",
+                f"REMARK {remark_index + 6}  SETTING num_ensemble={config.get('num_ensemble', 'null')}",
+                f"REMARK {remark_index + 7}  SETTING max_seq={config.get('max_seq', 'null')}",
+                f"REMARK {remark_index + 8}  SETTING max_extra_seq={config.get('max_extra_seq', 'null')}",
+                f"REMARK {remark_index + 9}  SETTING pair_mode=\"{config.get('pair_mode', 'null')}\"",
+                f"REMARK {remark_index + 10}  SETTING host_url=\"{config.get('host_url', 'null')}\"",
+                f"REMARK {remark_index + 11}  SETTING stop_at_score={config.get('stop_at_score', 'null')}",
+                f"REMARK {remark_index + 12}  SETTING random_seed={config.get('random_seed', 'null')}",
+                f"REMARK {remark_index + 13}  SETTING use_cluster_profile={config.get('use_cluster_profile', False)}",
+                f"REMARK {remark_index + 14}  SETTING use_fuse={config.get('use_fuse', False)}",
+                f"REMARK {remark_index + 15}  SETTING use_bfloat16={config.get('use_bfloat16', False)}",
+                f"REMARK {remark_index + 16}  SETTING version=\"{config.get('version', 'null')}\""
+            ]
+
+            for remark in json_remarks:
+                new_settings_lines_str += f"{remark}\n"
+                remark_index += 1
+
+            for r in recycle_stats:
+                new_settings_lines_str += f"REMARK {remark_index}  RECYCLESTAT pLDDT={r['mean_plddt']:.1f} pTM={r['ptm']:.3f} ipTM={r['iptm']:.3f} recycle={r['recycle_index']} tol={r['tol']:.2f}\n"
+                remark_index += 1
+
+            protein_lines = new_settings_lines_str + protein_lines
+            pdb_filename = str(files.get("unrelaxed","pdb.xz"))
+            with lzma.open(pdb_filename, 'wb') as handle:
+                handle.write(protein_lines.encode("utf-8"))
+            
+            
             del result, unrelaxed_protein
 
             # early stop criteria fulfilled
@@ -1560,6 +1650,15 @@ def msa_to_str(
     msa += pair_msa(query_seqs_unique, query_seqs_cardinality, paired_msa, unpaired_msa)
     return msa
 
+
+global_fold_ids = {}
+def get_fold_id(prefix:str):
+    if prefix in global_fold_ids: return global_fold_ids[prefix]
+
+    global_fold_ids[prefix] = str(uuid.uuid4())
+
+    return  global_fold_ids[prefix]
+
 def run(
     queries: List[Tuple[str, Union[str, List[str]], Optional[List[str]]]],
     result_dir: Union[str, Path],
@@ -1623,6 +1722,7 @@ def run(
     from colabfold.alphafold.models import load_models_and_params
     from colabfold.colabfold import plot_paes, plot_plddts
     from colabfold.plot import plot_msa_v2
+    from colabfold.plot import plot_msa_v3
 
     data_dir = Path(data_dir)
     result_dir = Path(result_dir)
@@ -1763,6 +1863,11 @@ def run(
                 (unpaired_msa, paired_msa, query_seqs_unique, query_seqs_cardinality, template_features) = data_store[jobname]
                 msa = msa_to_str(unpaired_msa, paired_msa, query_seqs_unique, query_seqs_cardinality)
                 msa_filename = str(result_dir.joinpath(f"{jobname}.a3m.xz"))
+                last_line_len = len(msa.split("\n").pop())
+
+                datetimestr = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S') + " UTC"
+                fold_id = get_fold_id(jobname)
+                msa += f"\n>NON_MSA_FILE_METADATA_LINE  fold_id={fold_id}  gen_time={datetimestr}"#+"X"*last_line_len
                 with lzma.open(msa_filename, 'wb') as handle:
                     handle.write(msa.encode("utf-8"))
             except Exception as e:
@@ -1895,6 +2000,7 @@ def run(
                 feature_dict=feature_dict,
                 is_complex=is_complex,
                 use_templates=use_templates,
+                template_domains=domain_names,
                 sequences_lengths=query_sequence_len_array,
                 pad_len=pad_len,
                 model_type=model_type,
@@ -1925,7 +2031,7 @@ def run(
         ###############
 
         # make msa plot
-        msa_plot = plot_msa_v2(feature_dict, dpi=dpi)
+        msa_plot = plot_msa_v3(feature_dict, dpi=300)
         coverage_png = result_dir.joinpath(f"{jobname}_coverage.png")
         msa_plot.savefig(str(coverage_png), bbox_inches='tight')
         msa_plot.close()
