@@ -69,10 +69,13 @@ def clear_mem(device="gpu"):
 
 TQDM_BAR_FORMAT = '{l_bar}{bar}| {n_fmt}/{total_fmt} [elapsed: {elapsed} remaining: {remaining}]'
 
+
 def run_mmseqs2(x, prefix, use_env=True, use_filter=True,
                 use_templates=False, filter=None, use_pairing=False,
-                host_url="https://api.colabfold.com") -> Tuple[List[str], List[str]]:
+                host_url="https://api.colabfold.com", 
+                use_proxy=False) -> Tuple[List[str], List[str]]:
   submission_endpoint = "ticket/pair" if use_pairing else "ticket/msa"
+
 
   def submit(seqs, mode, N=101):
     n, query = N, ""
@@ -189,7 +192,7 @@ def run_mmseqs2(x, prefix, use_env=True, use_filter=True,
         # Resubmit job until it goes through
         out = submit(seqs_unique, mode, N)
         while out["status"] in ["UNKNOWN", "RATELIMIT"]:
-          sleep_time = 5 + random.randint(0, 5)
+          sleep_time = 10 + 1.01*random.randint(0, 10)
           logger.error(f"Sleeping for {sleep_time}s. Reason: {out['status']}")
           # resubmit
           time.sleep(sleep_time)
@@ -201,6 +204,7 @@ def run_mmseqs2(x, prefix, use_env=True, use_filter=True,
         if out["status"] == "MAINTENANCE":
           raise Exception(f'MMseqs2 API is undergoing maintenance. Please try again in a few minutes.')
 
+        start_time = time.time()
         # wait for job to finish
         ID,TIME = out["id"],0
         pbar.set_description(out["status"])
@@ -217,6 +221,9 @@ def run_mmseqs2(x, prefix, use_env=True, use_filter=True,
           #  # something failed on the server side, need to resubmit
           #  N += 1
           #  break
+          if (time.time() - start_time) > 1000:
+              REDO = False
+              raise Exception(f'MMseqs2 API is taking too long (> 1000 seconds). Skipping this sequence.')
 
         if out["status"] == "COMPLETE":
           if TIME < TIME_ESTIMATE:
