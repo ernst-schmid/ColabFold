@@ -56,4 +56,4 @@ def download_alphafold_params(model_type: str, data_dir: Path = default_data_dir
 if __name__ == "__main__":
     # TODO: Arg to select which one
     download_alphafold_params("alphafold2_multimer_v3")
-    download_alphafold_params("alphafold2_ptm")
+    # download_alphafold_params("alphafold2_ptm")
