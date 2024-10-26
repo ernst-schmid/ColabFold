@@ -1875,7 +1875,7 @@ def run(
                 data_store[jobname] = 'error'
                 continue
     
-    msa_bg_thread = Thread(target=fetch_msas_in_background, args=(queries,result_dir,keep_existing_results,use_templates,get_msa_and_templates_v2,msa_to_str, unserialize_msa,logger, msa_data_store,))
+    msa_bg_thread = Thread(target=fetch_msas_in_background, args=(queries,result_dir,keep_existing_results,use_templates,get_msa_and_templates,msa_to_str, unserialize_msa,logger, msa_data_store,))
     msa_bg_thread.start()
     
     first_job = True
