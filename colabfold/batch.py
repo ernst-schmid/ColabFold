@@ -498,6 +498,226 @@ def get_msa_and_templates_v2(
         template_features,)
 
 
+
+
+def get_msa_and_templates_v3(
+    jobname: str,
+    query_sequences: Union[str, List[str]],
+    result_dir: Path,
+    msa_mode: str,
+    use_templates: bool,
+    custom_template_path: str,
+    pair_mode: str,
+    host_url: str = DEFAULT_API_SERVER,
+    saved_template_features_folder:str = None,
+    saved_unpaired_msa_features_folder:str = None,
+) -> Tuple[
+    Optional[List[str]], Optional[List[str]], List[str], List[int], List[Dict[str, Any]]
+]:
+    from colabfold.colabfold import run_mmseqs2
+
+    use_env = msa_mode == "mmseqs2_uniref_env"
+    if isinstance(query_sequences, str): query_sequences = [query_sequences]
+
+    # remove duplicates before searching
+    query_seqs_unique = []
+    for x in query_sequences:
+        if x not in query_seqs_unique:
+            query_seqs_unique.append(x)
+
+    # determine how many times is each sequence is used
+    query_seqs_cardinality = [0] * len(query_seqs_unique)
+    for seq in query_sequences:
+        seq_idx = query_seqs_unique.index(seq)
+        query_seqs_cardinality[seq_idx] += 1
+
+    #-------------------------------------------------------------------------------------------------------------------
+    #-------------------------------------------------------------------------------------------------------------------
+    #TEMPLATES FETCH-------------------------------------------------------------------------------------------------
+    template_features = {}
+    if use_templates:
+
+        if(saved_template_features_folder):
+
+            for index in range(0, len(query_seqs_unique)):
+                seq = query_seqs_unique[index]
+                seq_id = aa_seq_to_id(seq)
+                file_path = os.path.join(saved_template_features_folder, f'{seq_id}.pkl')
+                if os.path.isfile(file_path):
+                    with open(file_path, 'rb') as f:
+                        store_template_features = pickle.load(f)
+                        if 'template_aatype' in store_template_features and store_template_features['template_aatype'][0].shape[0] == len(seq):
+                            #double check that this is correct sequence via length
+                            template_features[index] = store_template_features
+                            logger.info(f"Retreived sequence {index}: {seq} from template file {file_path}")
+
+        search_ix_to_template_ix = {}
+        seqs_to_search = []
+        search_ix = 0
+        for index in range(0, len(query_seqs_unique)):
+            if(template_features[index]): continue
+
+            seqs_to_search.append(query_seqs_unique[index])
+            search_ix_to_template_ix[search_ix] = index
+            search_ix += 1
+
+        if len(seqs_to_search) > 0:
+            a3m_lines_mmseqs2, template_paths = run_mmseqs2(
+                seqs_to_search,
+                str(result_dir.joinpath(jobname)),
+                use_env,
+                use_templates=True,
+                host_url=host_url,
+            )
+            if custom_template_path is not None:
+                template_paths = {}
+                for seq_ix in range(0, len(seqs_to_search)):
+                    template_paths[seq_ix] = custom_template_path
+            if template_paths is None:
+                logger.info("No template detected")
+                for seq_ix in range(0, len(seqs_to_search)):
+                    template_feature = mk_mock_template(seqs_to_search[seq_ix])
+                    template_ix = search_ix_to_template_ix[seq_ix]
+
+                    template_features[template_ix] = template_feature
+            else:
+                for seq_ix in range(0, len(seqs_to_search)):
+                    if template_paths[seq_ix] is not None:
+                        template_feature = mk_template(
+                            a3m_lines_mmseqs2[seq_ix],
+                            template_paths[seq_ix],
+                            seqs_to_search[seq_ix],
+                        )
+                        if len(template_feature["template_domain_names"]) == 0:
+                            template_feature = mk_mock_template(seqs_to_search[seq_ix])
+                            logger.info(f"Sequence {seq_ix} found no templates")
+                        else:
+                            logger.info(
+                                f"Sequence {seq_ix} found templates: {template_feature['template_domain_names'].astype(str).tolist()}"
+                            )
+                    else:
+                        template_feature = mk_mock_template(seqs_to_search[seq_ix])
+                        logger.info(f"Sequence {seq_ix} found no templates")
+
+                    template_ix = search_ix_to_template_ix[seq_ix]
+                    template_features[template_ix] = template_feature
+    else:
+        for index in range(0, len(query_seqs_unique)):
+            template_feature = mk_mock_template(query_seqs_unique[index])
+            template_features[index] = template_feature
+
+    final_template_features = [template_features[ix] for ix in range(0, len(query_seqs_unique))]
+    template_features = final_template_features
+
+    if len(query_sequences) == 1:
+        pair_mode = "none"
+
+
+    #-------------------------------------------------------------------------------------------------------------------
+    #-------------------------------------------------------------------------------------------------------------------
+    #UNPAIRED MSA FETCH-------------------------------------------------------------------------------------------------
+
+
+
+
+    if pair_mode == "none" or pair_mode == "unpaired" or pair_mode == "unpaired_paired":
+        if msa_mode == "single_sequence":
+            a3m_lines = []
+            num = 101
+            for i, seq in enumerate(query_seqs_unique):
+                a3m_lines.append(f">{num + i}\n{seq}")
+        else:
+
+            a3m_lines = {}
+            seqs_to_search = []
+            
+
+            if(saved_unpaired_msa_features_folder):
+                for index in range(0, len(query_seqs_unique)):
+                    seq = query_seqs_unique[index]
+                    seq_id = aa_seq_to_id(seq)
+                    file_path = os.path.join(saved_unpaired_msa_features_folder, f'{seq_id}.pkl')
+                    if os.path.isfile(file_path):
+                        with open(file_path, 'rb') as f:
+                            saved_msa_str = pickle.load(f)
+                            saved_msa_lines = saved_msa_str.split('\n')
+                            msa_seq = saved_msa_lines[1]
+                            if(seq == msa_seq):
+                                a3m_lines[index] = saved_msa_str
+                                logger.info(f"Retreived unpaired MSA sequence {index}: {seq} from template file {file_path}")
+
+
+            
+            search_ix_to_msa_ix = {}
+            seqs_to_search = []
+            search_ix = 0
+            for index in range(0, len(query_seqs_unique)):
+                if(a3m_lines[index]): continue
+                seqs_to_search.append(query_seqs_unique[index])
+                search_ix_to_msa_ix[search_ix] = index
+                search_ix += 1
+
+            
+            if len(seqs_to_search) > 0:
+                # find normal a3ms
+                a3m_lines = run_mmseqs2(
+                    seqs_to_search,
+                    str(result_dir.joinpath(jobname)),
+                    use_env,
+                    use_pairing=False,
+                    host_url=host_url,
+                )
+
+                for seq_ix in range(0, len(seqs_to_search)):
+                    msa_ix = search_ix_to_msa_ix[seq_ix]
+                    a3m_lines[msa_ix] = a3m_lines[seq_ix]
+
+
+            final_a3ms = [a3m_lines[ix] for ix in range(0, len(query_seqs_unique))]
+            a3m_lines = final_a3ms
+
+    else:
+        a3m_lines = None
+
+
+
+    #-------------------------------------------------------------------------------------------------------------------
+    #-------------------------------------------------------------------------------------------------------------------
+    #PAIRED MSA FETCH-------------------------------------------------------------------------------------------------
+    if msa_mode != "single_sequence" and (
+        pair_mode == "paired" or pair_mode == "unpaired_paired"
+    ):
+        # find paired a3m if not a homooligomers
+        if len(query_seqs_unique) > 1:
+            paired_a3m_lines = run_mmseqs2(
+                query_seqs_unique,
+                str(result_dir.joinpath(jobname)),
+                use_env,
+                use_pairing=True,
+                host_url=host_url,
+            )
+        else:
+            # homooligomers
+            num = 101
+            paired_a3m_lines = []
+            for i in range(0, query_seqs_cardinality[0]):
+                paired_a3m_lines.append(f">{num+i}\n{query_seqs_unique[0]}\n")
+    else:
+        paired_a3m_lines = None
+
+
+    return (
+        a3m_lines,
+        paired_a3m_lines,
+        query_seqs_unique,
+        query_seqs_cardinality,
+        final_template_features,
+    )
+
+
+
+
+
 def mk_mock_template(
     query_sequence: Union[List[str], str], num_temp: int = 1
 ) -> Dict[str, Any]:
@@ -1757,6 +1977,11 @@ def run(
     if len(kwargs) > 0:
         print(f"WARNING: the following options are not being used: {kwargs}")
 
+
+    saved_template_paths  = kwargs.pop("saved_template_paths",None)
+    saved_unpaired_msa_paths  = kwargs.pop("saved_unpaired_msa_paths",None)
+
+
     # decide how to rank outputs
     if rank_by == "auto":
         rank_by = "multimer" if is_complex else "plddt"
@@ -1843,7 +2068,7 @@ def run(
     ranks, metrics = [],[]
     
     msa_data_store = {}
-    def fetch_msas_in_background(queries,result_dir,keep_existing_results,use_templates,get_msa_and_templates,msa_to_str, unserialize_msa,logger,data_store):
+    def fetch_msas_in_background(queries,result_dir,keep_existing_results,use_templates,get_msa_and_templates,msa_to_str, unserialize_msa,logger,data_store, template_store, unpaired_msa_store):
         
         for job_number, (raw_jobname, query_sequence, a3m_lines) in enumerate(queries):
             jobname = safe_filename(raw_jobname)
@@ -1853,7 +2078,7 @@ def run(
                 continue
             try:
                 if use_templates or a3m_lines is None:
-                    data_store[jobname] = get_msa_and_templates(jobname, query_sequence, result_dir, msa_mode, use_templates, custom_template_path, pair_mode, host_url)
+                    data_store[jobname] = get_msa_and_templates_v3(jobname, query_sequence, result_dir, msa_mode, use_templates, custom_template_path, pair_mode, host_url, template_store, unpaired_msa_store)
                 if a3m_lines is not None:
                     (unpaired_msa, paired_msa, query_seqs_unique, query_seqs_cardinality, template_features_) \
                     = unserialize_msa(a3m_lines, query_sequence)
@@ -1875,7 +2100,7 @@ def run(
                 data_store[jobname] = 'error'
                 continue
     
-    msa_bg_thread = Thread(target=fetch_msas_in_background, args=(queries,result_dir,keep_existing_results,use_templates,get_msa_and_templates,msa_to_str, unserialize_msa,logger, msa_data_store,))
+    msa_bg_thread = Thread(target=fetch_msas_in_background, args=(queries,result_dir,keep_existing_results,use_templates,get_msa_and_templates,msa_to_str, unserialize_msa,logger, msa_data_store,saved_template_paths, saved_unpaired_msa_paths))
     msa_bg_thread.start()
     
     first_job = True
@@ -2171,6 +2396,8 @@ def main():
         ],
         help="Using an a3m file as input overwrites this option",
     )
+    parser.add_argument("--saved-template-features-path", default="colabfold_template_store", type=str)
+    parser.add_argument("--saved-unpaired-msa-path", default="colabfold_unpaired_msa_store", type=str)
     parser.add_argument("--model-type",
         help="predict strucutre/complex using the following model."
         'Auto will pick "alphafold2_ptm" for structure predictions and "alphafold2_multimer_v3" for complexes.',
@@ -2352,6 +2579,8 @@ def main():
         use_gpu_relax = args.use_gpu_relax,
         save_all=args.save_all,
         save_recycles=args.save_recycles,
+        saved_template_paths = args.saved_template_features_path,
+        saved_unpaired_msa_paths = args.saved_unpaired_msa_path
     )
 
 if __name__ == "__main__":
