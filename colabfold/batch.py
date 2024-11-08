@@ -562,13 +562,17 @@ def get_msa_and_templates_v3(
             search_ix += 1
 
         if len(seqs_to_search) > 0:
-            a3m_lines_mmseqs2, template_paths = run_mmseqs2(
-                seqs_to_search,
-                str(result_dir.joinpath(jobname)),
-                use_env,
-                use_templates=True,
-                host_url=host_url,
-            )
+            try:
+                a3m_lines_mmseqs2, template_paths = run_mmseqs2(
+                    seqs_to_search,
+                    str(result_dir.joinpath(jobname)),
+                    use_env,
+                    use_templates=True,
+                    host_url=host_url,
+                )
+            except:
+                return None
+                
             if custom_template_path is not None:
                 template_paths = {}
                 for seq_ix in range(0, len(seqs_to_search)):
@@ -660,13 +664,17 @@ def get_msa_and_templates_v3(
             
             if len(seqs_to_search) > 0:
                 # find normal a3ms
-                a3m_lines = run_mmseqs2(
-                    seqs_to_search,
-                    str(result_dir.joinpath(jobname)),
-                    use_env,
-                    use_pairing=False,
-                    host_url=host_url,
-                )
+
+                try:
+                    a3m_lines = run_mmseqs2(
+                        seqs_to_search,
+                        str(result_dir.joinpath(jobname)),
+                        use_env,
+                        use_pairing=False,
+                        host_url=host_url,
+                    )
+                except:
+                    return None
 
                 for seq_ix in range(0, len(seqs_to_search)):
                     msa_ix = search_ix_to_msa_ix[seq_ix]
@@ -689,13 +697,16 @@ def get_msa_and_templates_v3(
     ):
         # find paired a3m if not a homooligomers
         if len(query_seqs_unique) > 1:
-            paired_a3m_lines = run_mmseqs2(
-                query_seqs_unique,
-                str(result_dir.joinpath(jobname)),
-                use_env,
-                use_pairing=True,
-                host_url=host_url,
-            )
+            try:
+                paired_a3m_lines = run_mmseqs2(
+                    query_seqs_unique,
+                    str(result_dir.joinpath(jobname)),
+                    use_env,
+                    use_pairing=True,
+                    host_url=host_url,
+                )
+            except:
+                return None
         else:
             # homooligomers
             num = 101
@@ -2106,6 +2117,7 @@ def run(
     first_job = True
     for job_number, (raw_jobname, query_sequence, a3m_lines) in enumerate(queries):
         jobname = safe_filename(raw_jobname)
+        (unpaired_msa, paired_msa, query_seqs_unique, query_seqs_cardinality, template_features) = None, None, None, None, None
         
         #######################################
         # check if job has already finished
@@ -2134,9 +2146,9 @@ def run(
                     logger.info(f"WAITING ON MSA for {jobname}, sleeping for 10s")
                     time.sleep(10)
 
-                if msa_data_store[jobname] == 'error':
+                if msa_data_store[jobname] is None or msa_data_store[jobname] == 'error':
                     logger.info(f"ERROR: Could not get MSA for {jobname} have to skip")
-
+                    raise RuntimeError(f"MSA retrieval failed for {jobname}")
                 else:
                     (unpaired_msa, paired_msa, query_seqs_unique, query_seqs_cardinality, template_features) = msa_data_store.pop(jobname, None)
 
