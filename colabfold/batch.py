@@ -555,7 +555,7 @@ def get_msa_and_templates_v3(
         seqs_to_search = []
         search_ix = 0
         for index in range(0, len(query_seqs_unique)):
-            if(template_features[index]): continue
+            if(index in template_features): continue
 
             seqs_to_search.append(query_seqs_unique[index])
             search_ix_to_template_ix[search_ix] = index
@@ -656,12 +656,11 @@ def get_msa_and_templates_v3(
             seqs_to_search = []
             search_ix = 0
             for index in range(0, len(query_seqs_unique)):
-                if(a3m_lines[index]): continue
+                if(index in a3m_lines): continue
                 seqs_to_search.append(query_seqs_unique[index])
                 search_ix_to_msa_ix[search_ix] = index
                 search_ix += 1
 
-            
             if len(seqs_to_search) > 0:
                 # find normal a3ms
 
