@@ -258,7 +258,7 @@ def get_msa_and_templates_v2(
     for x in query_sequences:
         query_seqs_unique.append(x)
 
-    # determine how many times is each sequence is used
+    # determine how many times is each sequence is used Running on GPU
     query_seqs_cardinality = [1] * len(query_seqs_unique)
 
     # get template features
@@ -665,7 +665,7 @@ def get_msa_and_templates_v3(
                 # find normal a3ms
 
                 try:
-                    a3m_lines = run_mmseqs2(
+                    new_a3m_lines = run_mmseqs2(
                         seqs_to_search,
                         str(result_dir.joinpath(jobname)),
                         use_env,
@@ -677,7 +677,7 @@ def get_msa_and_templates_v3(
 
                 for seq_ix in range(0, len(seqs_to_search)):
                     msa_ix = search_ix_to_msa_ix[seq_ix]
-                    a3m_lines[msa_ix] = a3m_lines[seq_ix]
+                    a3m_lines[msa_ix] = new_a3m_lines[seq_ix]
 
 
             final_a3ms = [a3m_lines[ix] for ix in range(0, len(query_seqs_unique))]
